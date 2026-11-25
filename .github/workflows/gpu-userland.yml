@@ -106,8 +106,8 @@ jobs:
           s = p.read_text()
           old = "    '0064-copies-leave-unreachable-pages-alone.patch']]"
           assert s.count(old) == 1
-          p.write_text(s.replace(old, "    '0064-copies-leave-unreachable-pages-alone.patch',
-    '0065-read-pages-on-ios.patch']]"))
+          new = "    '0064-copies-leave-unreachable-pages-alone.patch', '0065-read-pages-on-ios.patch']]"
+          p.write_text(s.replace(old, new))
           PY
           grep -n "0065" scripts/build-adreno-metal-bridge.py
 
