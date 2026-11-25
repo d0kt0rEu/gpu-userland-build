@@ -1,0 +1,128 @@
+name: GPU userland (iOS 17)
+
+# Builds UniXNU's GPU userland for iPadOS 17 (arm64): Turnip (Mesa freedreno Vulkan with the Darwin kernel backend), the
+# AdrenoMetal Metal plugin bundle, and the GPU add-on file the boot payload carries. Same steps as UniXNU
+# scripts/build-boot-runtime.py build_plugin() and docs/porting/gpu.md "Build and stage Metal", from public sources only.
+# The binaries are ad-hoc signed; the owner trust bundle that admits them is made offline, never here.
+
+on:
+  workflow_dispatch:
+    inputs:
+      unixnu_ref:
+        description: UniXNU commit (the one the device tree is built from)
+        required: true
+        default: 8542980d02b4d2cc5c32ee3542de1760b2562aac
+      xcode:
+        description: Xcode version on the runner (/Applications/Xcode_<version>.app)
+        required: true
+        default: "26.6"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 300
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_${{ inputs.xcode }}.app/Contents/Developer
+      HOMEBREW_NO_AUTO_UPDATE: 1
+      HOMEBREW_NO_INSTALL_CLEANUP: 1
+    defaults:
+      run:
+        shell: bash
+        working-directory: UniXNU
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: UniXNU/UniXNU
+          ref: ${{ inputs.unixnu_ref }}
+          path: UniXNU
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Tools
+        run: |
+          [ -d "$DEVELOPER_DIR" ] || { echo "::error::no Xcode at $DEVELOPER_DIR; installed: $(ls -d /Applications/Xcode_*.app | tr '\n' ' ')"; exit 1; }
+          brew install llvm lld cmake ninja glslang shaderc spirv-tools bison pkgconf rustup
+          {
+            echo "$HOME/.cargo/bin"
+            echo "/opt/homebrew/opt/llvm/bin"
+            echo "/opt/homebrew/opt/lld/bin"
+            echo "/opt/homebrew/opt/bison/bin"
+          } >> "$GITHUB_PATH"
+          rustup-init -y --profile minimal --default-toolchain none 2>/dev/null || true
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup toolchain install 1.98.0 --profile minimal --component rust-src
+          xcrun --sdk iphoneos --show-sdk-path
+          git -C drivers/Adreno740 rev-parse HEAD
+          git -C drivers/AdrenoMetal rev-parse HEAD
+
+      - name: Sources (pinned Mesa with UniXNU's patches, metal2vulkan)
+        run: |
+          python3 - <<'PY'
+          import json, subprocess, sys
+          from pathlib import Path
+          ROOT = Path('.').resolve()
+          def run(*c): subprocess.run([str(x) for x in c], check=True)
+          def checkout(path, pin):
+              path.mkdir(parents=True)
+              run('git', 'init', '-q', path)
+              run('git', '-C', path, 'fetch', '--depth=1', pin.get('mirror', pin['repository']), pin['commit'])
+              run('git', '-C', path, 'checkout', '--detach', 'FETCH_HEAD')
+          pins = json.loads((ROOT / 'scripts/data/adreno-compiler-inputs.json').read_text())
+          mesa = ROOT / '.cache/mesa-work'
+          checkout(mesa, pins['mesa'])
+          for patch in pins['patches']:
+              run('git', '-C', mesa, 'apply', ROOT / patch)
+          sys.path.insert(0, str(ROOT / 'scripts'))
+          from mesa_patch_identity import validate_recorded_patches
+          validate_recorded_patches(ROOT, mesa, pins)
+          translator = json.loads((ROOT / 'scripts/data/gpu-metal-vulkan-inputs.json').read_text())['translator']
+          checkout(ROOT / '.cache/gpu-reference/metal2vulkan', translator)
+          PY
+          python3 -m venv .cache/mesa-venv
+          .cache/mesa-venv/bin/python -m pip install -r scripts/requirements-adreno-compiler.txt
+
+      - name: Turnip
+        run: python3 scripts/build-turnip-darwin.py --target ios
+
+      - name: Metal plugin
+        run: python3 scripts/build-adreno-metal-plugin.py --target ios --no-replay
+
+      - name: GPU add-on
+        run: python3 scripts/make-gpu-addon.py --publish build/gpuaddon.bin
+
+      - name: Record versions
+        if: always()
+        run: |
+          {
+            echo "unixnu $(git rev-parse HEAD)"
+            git submodule status
+            echo "xcode $(xcodebuild -version | tr '\n' ' ')"
+            echo "sdk $(xcrun --sdk iphoneos --show-sdk-version)"
+            shasum -a 256 build/gpuaddon.bin build/mesa-tu-ios/src/freedreno/vulkan/libvulkan_freedreno.dylib 2>/dev/null
+          } > build/versions.txt 2>&1 || true
+          cat build/versions.txt
+
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: gpu-userland-ios17
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            UniXNU/build/gpuaddon.bin
+            UniXNU/build/adreno-metal-plugin/
+            UniXNU/build/mesa-tu-ios/src/freedreno/vulkan/libvulkan_freedreno.dylib
+            UniXNU/build/versions.txt
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: build-logs
+          retention-days: 7
+          path: |
+            UniXNU/.cache/*.log
+            UniXNU/build/**/*.log
+            UniXNU/build/mesa-tu-ios/meson-logs/
