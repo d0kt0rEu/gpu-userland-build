@@ -92,8 +92,23 @@ jobs:
           python3 -m venv .cache/mesa-venv
           .cache/mesa-venv/bin/python -m pip install -r scripts/requirements-adreno-compiler.txt
 
+      # Turnip links with -undefined dynamic_lookup (patches/mesa/turnip-darwin-kmd.patch). With this Xcode's linker that falls
+      # back to classic dyld opcodes for the iOS 17 target, but build-adreno-metal-plugin.py's macho-self-bind-weak-imports.py
+      # needs LC_DYLD_CHAINED_FIXUPS ("no chained fixups"): ask for chained fixups explicitly on the link lines.
       - name: Turnip
-        run: python3 scripts/build-turnip-darwin.py --target ios
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('scripts/build-turnip-darwin.py')
+          s = p.read_text()
+          old = "''.join('%s = %r\\n' % (k, flags) for k in ('c_args', 'cpp_args', 'objc_args', 'c_link_args', 'cpp_link_args',"
+          assert s.count(old) == 1, 'cross-file flags line not found'
+          s = s.replace(old, "''.join('%s = %r\\n' % (k, flags + (['-Wl,-fixup_chains'] if k.endswith('link_args') else [])) for k in ('c_args', 'cpp_args', 'objc_args', 'c_link_args', 'cpp_link_args',")
+          p.write_text(s)
+          PY
+          python3 scripts/build-turnip-darwin.py --target ios
+          f=build/mesa-tu-ios/src/freedreno/vulkan/libvulkan_freedreno.dylib
+          otool -l "$f" | grep -c LC_DYLD_CHAINED_FIXUPS || { echo "::error::Turnip still has no chained fixups"; exit 1; }
 
       # metal2vulkan 46e7cc96 + 0063/0064 defines read_pages for macOS, Linux and Windows only, but copied.rs calls it on every
       # target, so aarch64-apple-ios does not compile (E0425). 0065 enables the macOS one (mach_vm_read_overwrite) on iOS too and is
