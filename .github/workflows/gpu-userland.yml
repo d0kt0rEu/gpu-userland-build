@@ -41,6 +41,11 @@ jobs:
           submodules: recursive
           persist-credentials: false
 
+      - uses: actions/checkout@v4
+        with:
+          path: self
+          persist-credentials: false
+
       - name: Tools
         run: |
           [ -d "$DEVELOPER_DIR" ] || { echo "::error::no Xcode at $DEVELOPER_DIR; installed: $(ls -d /Applications/Xcode_*.app | tr '\n' ' ')"; exit 1; }
@@ -88,6 +93,23 @@ jobs:
 
       - name: Turnip
         run: python3 scripts/build-turnip-darwin.py --target ios
+
+      # metal2vulkan 46e7cc96 + 0063/0064 defines read_pages for macOS, Linux and Windows only, but copied.rs calls it on every
+      # target, so aarch64-apple-ios does not compile (E0425). 0065 enables the macOS one (mach_vm_read_overwrite) on iOS too and is
+      # recorded after the two pinned patches, so build-adreno-metal-bridge.py's source identity check still holds.
+      - name: Translator iOS patch
+        run: |
+          cp ../self/patches/0065-read-pages-on-ios.patch drivers/AdrenoMetal/bridge/patches/
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('scripts/build-adreno-metal-bridge.py')
+          s = p.read_text()
+          old = "    '0064-copies-leave-unreachable-pages-alone.patch']]"
+          assert s.count(old) == 1
+          p.write_text(s.replace(old, "    '0064-copies-leave-unreachable-pages-alone.patch',
+    '0065-read-pages-on-ios.patch']]"))
+          PY
+          grep -n "0065" scripts/build-adreno-metal-bridge.py
 
       - name: Metal plugin
         run: python3 scripts/build-adreno-metal-plugin.py --target ios --no-replay
