@@ -54,6 +54,8 @@ jobs:
           rustup-init -y --profile minimal --default-toolchain none 2>/dev/null || true
           export PATH="$HOME/.cargo/bin:$PATH"
           rustup toolchain install 1.98.0 --profile minimal --component rust-src
+          # build-adreno-metal-bridge.py --target ios builds with the prebuilt std of aarch64-apple-ios (build-std is arm64e only).
+          rustup target add aarch64-apple-ios --toolchain 1.98.0
           xcrun --sdk iphoneos --show-sdk-path
           git -C drivers/Adreno740 rev-parse HEAD
           git -C drivers/AdrenoMetal rev-parse HEAD
