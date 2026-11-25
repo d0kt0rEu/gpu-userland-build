@@ -50,10 +50,11 @@ jobs:
         run: |
           [ -d "$DEVELOPER_DIR" ] || { echo "::error::no Xcode at $DEVELOPER_DIR; installed: $(ls -d /Applications/Xcode_*.app | tr '\n' ' ')"; exit 1; }
           brew install llvm lld cmake ninja glslang shaderc spirv-tools bison pkgconf rustup
+          # Homebrew LLVM stays off PATH (UniXNU docs/guide/requirements.md: its scripts find /opt/homebrew/opt/llvm/bin themselves).
+          # On PATH, its llvm-strip stood in for Xcode's strip and the stripped Turnip dylib lost LC_DYLD_CHAINED_FIXUPS, which
+          # macho-self-bind-weak-imports.py needs ("no chained fixups").
           {
             echo "$HOME/.cargo/bin"
-            echo "/opt/homebrew/opt/llvm/bin"
-            echo "/opt/homebrew/opt/lld/bin"
             echo "/opt/homebrew/opt/bison/bin"
           } >> "$GITHUB_PATH"
           rustup-init -y --profile minimal --default-toolchain none 2>/dev/null || true
